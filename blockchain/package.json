@@ -1,0 +1,17 @@
+{
+  "name": "ai-trading-blockchain",
+  "version": "1.0.0",
+  "description": "Local Hardhat blockchain for AI trading system testing",
+  "scripts": {
+    "node": "hardhat node",
+    "deploy": "hardhat run scripts/deploy.js --network localhost",
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "clean": "hardhat clean"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^4.0.0",
+    "@openzeppelin/contracts": "^5.0.0",
+    "hardhat": "^2.19.0"
+  }
+}

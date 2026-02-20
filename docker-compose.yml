@@ -1,0 +1,29 @@
+version: '3.8'
+
+# Development Docker Compose - ONLY DATABASE
+# Bot runs locally (not in Docker)
+# Only PostgreSQL is needed for data persistence
+
+services:
+  # PostgreSQL Database (for bot data persistence)
+  postgres:
+    image: docker.io/library/postgres:15-alpine
+    container_name: ai-trading-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: trading
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: trading_db
+    ports:
+      - "15432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - trading-network
+
+networks:
+  trading-network:
+    driver: bridge
+
+volumes:
+  postgres-data:

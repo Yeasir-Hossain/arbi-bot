@@ -1,0 +1,87 @@
+# AI Trading Bot - .gitignore
+
+# ============================================
+# Environment & Secrets (NEVER COMMIT)
+# ============================================
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+.secrets.*
+config/.secrets.*
+config/contracts.json
+
+# ============================================
+# Python
+# ============================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ============================================
+# Logs & Data
+# ============================================
+logs/*.log
+logs/alerts/*.log
+logs/executions/*.log
+data/*.json
+data/*.jsonl
+data/*.db
+data/*.sqlite
+!logs/.gitkeep
+!data/.gitkeep
+
+# ============================================
+# IDE & Editor
+# ============================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+
+# ============================================
+# OS
+# ============================================
+.DS_Store
+Thumbs.db
+*.orig
+
+# ============================================
+# Docker
+# ============================================
+docker-compose.override.yml
+.docker/
+
+# ============================================
+# Temporary Files
+# ============================================
+tmp/
+temp/
+*.tmp
+*.bak
+*.backup
+
+# ============================================
+# Testing
+# ============================================
+.tox/
+.nox/
+coverage.xml
+*.cover

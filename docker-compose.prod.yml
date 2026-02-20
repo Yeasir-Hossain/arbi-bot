@@ -1,0 +1,48 @@
+# AI Trading Bot - Production Docker Compose
+# Runs everything in containers (bot + dashboard + database)
+
+version: '3.8'
+
+services:
+  # AI Trading Bot (includes dashboard)
+  trading-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+    container_name: ai-trading-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8080:8080"  # Dashboard
+    volumes:
+      - ./logs:/app/logs
+      - ./data:/app/data
+      - ./config:/app/config
+    depends_on:
+      - postgres
+    networks:
+      - trading-network
+    environment:
+      - DATABASE_URL=postgresql://trading:password@postgres:5432/trading_db
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: ai-trading-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: trading
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: trading_db
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - trading-network
+
+networks:
+  trading-network:
+    driver: bridge
+
+volumes:
+  postgres-data:
