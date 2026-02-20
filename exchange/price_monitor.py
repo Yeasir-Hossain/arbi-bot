@@ -2,10 +2,22 @@
 Multi-Exchange Price Monitor
 Uses PUBLIC APIs - NO API KEYS REQUIRED
 
-Monitors prices across exchanges to find arbitrage opportunities
+Monitors prices across exchanges to find arbitrage opportunities.
+Includes per-source rate limiting to avoid 429 errors.
+
+Working sources (verified from BD):
+- Binance (200 OK)
+- Coinbase (200 OK)
+- Bybit (200 OK)
+- KuCoin (200 OK)
+- Kraken (200 OK)
+- CoinGecko (batch, rate-limited)
+
+Blocked: OKX (403 geo-blocked)
 """
 
 import asyncio
+import time
 import aiohttp
 from typing import Dict, List, Optional
 from datetime import datetime
@@ -14,59 +26,95 @@ from loguru import logger
 
 class PublicPriceAPI:
     """Public price APIs that don't require authentication"""
-    
-    # Binance public API
+
     BINANCE_API = "https://api.binance.com/api/v3/ticker/price"
-    
-    # Coinbase public API
-    COINBASE_API = "https://api.coinbase.com/v2/prices/spot?currency=USD"
-    
-    # Kraken public API
-    KRAKEN_API = "https://api.kraken.com/0/public/Ticker"
-    
-    # CoinGecko aggregated API (recommended)
+    COINBASE_API = "https://api.coinbase.com/v2/prices/{pair}/spot"
     COINGECKO_API = "https://api.coingecko.com/api/v3/simple/price"
-    
-    # OKX public API
-    OKX_API = "https://www.okx.com/api/v5/market/ticker"
-    
-    # Bybit public API
-    BYBIT_API = "https://api.bybit.com/v5/market/ticker"
+    BYBIT_API = "https://api.bybit.com/v5/market/tickers"
+    KUCOIN_API = "https://api.kucoin.com/api/v1/market/orderbook/level1"
+    KRAKEN_API = "https://api.kraken.com/0/public/Ticker"
+
+
+# Symbol → Binance pair mapping
+BINANCE_PAIRS = {
+    'BTC': 'BTCUSDT', 'ETH': 'ETHUSDT', 'SOL': 'SOLUSDT',
+    'BNB': 'BNBUSDT', 'ARB': 'ARBUSDT', 'OP': 'OPUSDT',
+    'RNDR': 'RNDRUSDT', 'FET': 'FETUSDT', 'ONDO': 'ONDOUSDT',
+}
+
+# Symbol → CoinGecko ID mapping
+COINGECKO_IDS = {
+    'BTC': 'bitcoin', 'ETH': 'ethereum', 'SOL': 'solana',
+    'BNB': 'binancecoin', 'ARB': 'arbitrum', 'OP': 'optimism',
+    'RNDR': 'render-token', 'FET': 'fetch-ai', 'ONDO': 'ondo-finance',
+}
+
+# Symbol → Coinbase pair mapping
+COINBASE_PAIRS = {
+    'BTC': 'BTC-USD', 'ETH': 'ETH-USD', 'SOL': 'SOL-USD',
+    'ARB': 'ARB-USD', 'OP': 'OP-USD', 'RNDR': 'RNDR-USD',
+    'FET': 'FET-USD', 'ONDO': 'ONDO-USD',
+}
+
+# Symbol → KuCoin pair mapping
+KUCOIN_PAIRS = {
+    'BTC': 'BTC-USDT', 'ETH': 'ETH-USDT', 'SOL': 'SOL-USDT',
+    'BNB': 'BNB-USDT', 'ARB': 'ARB-USDT', 'OP': 'OP-USDT',
+    'RNDR': 'RNDR-USDT', 'FET': 'FET-USDT', 'ONDO': 'ONDO-USDT',
+}
+
+# Symbol → Kraken pair mapping (Kraken uses weird pair names)
+KRAKEN_PAIRS = {
+    'BTC': 'XBTUSD', 'ETH': 'ETHUSD', 'SOL': 'SOLUSD',
+    'ARB': 'ARBUSD', 'OP': 'OPUSD', 'FET': 'FETUSD',
+    'ONDO': 'ONDOUSD',
+}
+
+
+class RateLimiter:
+    """Simple per-source rate limiter based on minimum interval"""
+
+    def __init__(self):
+        self._last_request: Dict[str, float] = {}
+        self._intervals = {
+            'binance': 2.0,
+            'coinbase': 2.0,
+            'coingecko': 12.0,  # ~5 req/min — conservative for free tier
+            'bybit': 2.0,
+            'kucoin': 2.0,
+            'kraken': 2.0,
+        }
+
+    async def wait(self, source: str):
+        """Wait if needed to respect rate limit for source"""
+        interval = self._intervals.get(source, 2.0)
+        last = self._last_request.get(source, 0)
+        elapsed = time.monotonic() - last
+        if elapsed < interval:
+            await asyncio.sleep(interval - elapsed)
+        self._last_request[source] = time.monotonic()
 
 
 class ExchangePriceMonitor:
     """
-    Monitor prices across multiple exchanges using public APIs
-    
-    NO API KEYS REQUIRED - uses public endpoints
+    Monitor prices across multiple exchanges using public APIs.
+    NO API KEYS REQUIRED - uses public endpoints.
     """
 
     def __init__(self, symbols: List[str] = None):
-        """
-        Initialize price monitor
-        
-        Args:
-            symbols: List of symbols to monitor (researched for 2026)
-        """
-        # Prioritized by 2026 growth potential (researched)
-        # Tier 1: SOL (800%), ETH (150%), BTC (270%)
-        # Tier 2: RNDR (AI), FET (AI), ONDO (RWA)
-        # Tier 3: ARB, OP (Layer 2)
         self.symbols = symbols or [
-            'SOL',   # ⭐ 800% potential
-            'ETH',   # ⭐ 150%+ potential
-            'BTC',   # ⭐ 270%+ potential
-            'RNDR',  # ⭐ AI + GPU rendering
-            'FET',   # ⭐ AI agents
-            'ONDO',  # ⭐ RWA tokenization
-            'ARB',   # Layer 2
-            'OP'     # Layer 2
+            'SOL', 'ETH', 'BTC', 'RNDR', 'FET', 'ONDO', 'ARB', 'OP'
         ]
         self.session: Optional[aiohttp.ClientSession] = None
         self.last_prices: Dict[str, Dict[str, float]] = {}
-        
+        self._rate_limiter = RateLimiter()
+        # Cache for CoinGecko batch results
+        self._coingecko_cache: Dict[str, float] = {}
+        self._coingecko_cache_time: float = 0
+
         logger.info("Exchange Price Monitor initialized (public APIs)")
         logger.info(f"Monitoring symbols: {self.symbols}")
+        logger.info("Sources: Binance, Coinbase, Bybit, KuCoin, Kraken, CoinGecko")
 
     async def start(self):
         """Start the monitor"""
@@ -81,22 +129,11 @@ class ExchangePriceMonitor:
 
     async def get_binance_price(self, symbol: str) -> Optional[float]:
         """Get price from Binance (public API)"""
+        pair = BINANCE_PAIRS.get(symbol)
+        if not pair:
+            return None
         try:
-            if symbol == 'BTC':
-                pair = 'BTCUSDT'
-            elif symbol == 'ETH':
-                pair = 'ETHUSDT'
-            elif symbol == 'SOL':
-                pair = 'SOLUSDT'
-            elif symbol == 'BNB':
-                pair = 'BNBUSDT'
-            elif symbol == 'ARB':
-                pair = 'ARBUSDT'
-            elif symbol == 'OP':
-                pair = 'OPUSDT'
-            else:
-                return None
-            
+            await self._rate_limiter.wait('binance')
             async with self.session.get(
                 PublicPriceAPI.BINANCE_API,
                 params={'symbol': pair},
@@ -104,133 +141,148 @@ class ExchangePriceMonitor:
             ) as response:
                 if response.status == 200:
                     data = await response.json()
-                    price = float(data.get('price', 0))
-                    return price
+                    return float(data.get('price', 0))
         except Exception as e:
             logger.debug(f"Binance price fetch failed for {symbol}: {e}")
         return None
 
     async def get_coinbase_price(self, symbol: str) -> Optional[float]:
         """Get price from Coinbase (public API)"""
+        pair = COINBASE_PAIRS.get(symbol)
+        if not pair:
+            return None
         try:
+            await self._rate_limiter.wait('coinbase')
+            url = PublicPriceAPI.COINBASE_API.format(pair=pair)
             async with self.session.get(
-                f"{PublicPriceAPI.COINBASE_API}",
-                params={'currency': 'USD'},
-                headers={'Content-Type': 'application/json'},
+                url,
                 timeout=aiohttp.ClientTimeout(total=5)
             ) as response:
                 if response.status == 200:
                     data = await response.json()
-                    # Coinbase returns price for base asset
-                    if symbol == 'BTC':
-                        return float(data.get('data', {}).get('amount', 0))
-                    elif symbol == 'ETH':
-                        # Need different endpoint for ETH
-                        async with self.session.get(
-                            "https://api.coinbase.com/v2/prices/ETH-USD/spot",
-                            timeout=aiohttp.ClientTimeout(total=5)
-                        ) as eth_response:
-                            eth_data = await eth_response.json()
-                            return float(eth_data.get('data', {}).get('amount', 0))
+                    return float(data.get('data', {}).get('amount', 0))
         except Exception as e:
             logger.debug(f"Coinbase price fetch failed for {symbol}: {e}")
         return None
 
-    async def get_coingecko_price(self, symbol: str) -> Optional[float]:
-        """Get price from CoinGecko (aggregated, recommended)"""
+    async def _refresh_coingecko_batch(self):
+        """Fetch all symbol prices from CoinGecko in a single batch request"""
         try:
-            # CoinGecko uses coin IDs, not symbols
-            coin_ids = {
-                'BTC': 'bitcoin',
-                'ETH': 'ethereum',
-                'SOL': 'solana',
-                'BNB': 'binancecoin',
-                'ARB': 'arbitrum',
-                'OP': 'optimism'
-            }
-            
-            coin_id = coin_ids.get(symbol)
-            if not coin_id:
-                return None
-            
+            await self._rate_limiter.wait('coingecko')
+            ids = ','.join(COINGECKO_IDS[s] for s in self.symbols if s in COINGECKO_IDS)
             async with self.session.get(
                 PublicPriceAPI.COINGECKO_API,
-                params={
-                    'ids': coin_id,
-                    'vs_currencies': 'usd'
-                },
-                timeout=aiohttp.ClientTimeout(total=5)
+                params={'ids': ids, 'vs_currencies': 'usd'},
+                timeout=aiohttp.ClientTimeout(total=10)
             ) as response:
                 if response.status == 200:
                     data = await response.json()
-                    price = data.get(coin_id, {}).get('usd', 0)
-                    return float(price)
+                    cache = {}
+                    for symbol, coin_id in COINGECKO_IDS.items():
+                        price = data.get(coin_id, {}).get('usd')
+                        if price:
+                            cache[symbol] = float(price)
+                    self._coingecko_cache = cache
+                    self._coingecko_cache_time = time.monotonic()
+                elif response.status == 429:
+                    logger.warning("CoinGecko rate limited (429)")
         except Exception as e:
-            logger.debug(f"CoinGecko price fetch failed for {symbol}: {e}")
-        return None
+            logger.debug(f"CoinGecko batch fetch failed: {e}")
 
-    async def get_okx_price(self, symbol: str) -> Optional[float]:
-        """Get price from OKX (public API)"""
-        try:
-            inst_id = f"{symbol}-USDT"
-            async with self.session.get(
-                PublicPriceAPI.OKX_API,
-                params={'instId': inst_id},
-                timeout=aiohttp.ClientTimeout(total=5)
-            ) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    if data.get('data'):
-                        price = float(data['data'][0].get('last', 0))
-                        return price
-        except Exception as e:
-            logger.debug(f"OKX price fetch failed for {symbol}: {e}")
-        return None
+    async def get_coingecko_price(self, symbol: str) -> Optional[float]:
+        """Get price from CoinGecko (uses batch cache, refreshes every 12s)"""
+        if symbol not in COINGECKO_IDS:
+            return None
+        if time.monotonic() - self._coingecko_cache_time > 12:
+            await self._refresh_coingecko_batch()
+        return self._coingecko_cache.get(symbol)
 
     async def get_bybit_price(self, symbol: str) -> Optional[float]:
         """Get price from Bybit (public API)"""
         try:
+            await self._rate_limiter.wait('bybit')
             async with self.session.get(
                 PublicPriceAPI.BYBIT_API,
-                params={
-                    'category': 'spot',
-                    'symbol': f'{symbol}USDT'
-                },
+                params={'category': 'spot', 'symbol': f'{symbol}USDT'},
                 timeout=aiohttp.ClientTimeout(total=5)
             ) as response:
                 if response.status == 200:
                     data = await response.json()
-                    if data.get('result', {}).get('list'):
-                        price = float(data['result']['list'][0].get('lastPrice', 0))
-                        return price
+                    result_list = data.get('result', {}).get('list', [])
+                    if result_list:
+                        return float(result_list[0].get('lastPrice', 0))
         except Exception as e:
             logger.debug(f"Bybit price fetch failed for {symbol}: {e}")
         return None
 
+    async def get_kucoin_price(self, symbol: str) -> Optional[float]:
+        """Get price from KuCoin (public API)"""
+        pair = KUCOIN_PAIRS.get(symbol)
+        if not pair:
+            return None
+        try:
+            await self._rate_limiter.wait('kucoin')
+            async with self.session.get(
+                PublicPriceAPI.KUCOIN_API,
+                params={'symbol': pair},
+                timeout=aiohttp.ClientTimeout(total=5)
+            ) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    price = data.get('data', {}).get('price')
+                    if price:
+                        return float(price)
+        except Exception as e:
+            logger.debug(f"KuCoin price fetch failed for {symbol}: {e}")
+        return None
+
+    async def get_kraken_price(self, symbol: str) -> Optional[float]:
+        """Get price from Kraken (public API)"""
+        pair = KRAKEN_PAIRS.get(symbol)
+        if not pair:
+            return None
+        try:
+            await self._rate_limiter.wait('kraken')
+            async with self.session.get(
+                PublicPriceAPI.KRAKEN_API,
+                params={'pair': pair},
+                timeout=aiohttp.ClientTimeout(total=5)
+            ) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if not data.get('error'):
+                        # Kraken returns data keyed by internal pair name
+                        for pair_key, ticker in data.get('result', {}).items():
+                            # 'c' = last trade closed [price, lot-volume]
+                            return float(ticker['c'][0])
+        except Exception as e:
+            logger.debug(f"Kraken price fetch failed for {symbol}: {e}")
+        return None
+
     async def get_all_prices(self, symbol: str) -> Dict[str, float]:
         """
-        Get price for symbol from all exchanges
-        
+        Get price for symbol from all exchanges.
+
         Returns:
             Dict of exchange -> price
         """
         prices = {}
-        
-        # Fetch from all exchanges concurrently
+
         tasks = {
             'binance': self.get_binance_price(symbol),
-            'coingecko': self.get_coingecko_price(symbol),
             'coinbase': self.get_coinbase_price(symbol),
-            'okx': self.get_okx_price(symbol),
-            'bybit': self.get_bybit_price(symbol)
+            'bybit': self.get_bybit_price(symbol),
+            'kucoin': self.get_kucoin_price(symbol),
+            'kraken': self.get_kraken_price(symbol),
+            'coingecko': self.get_coingecko_price(symbol),
         }
-        
+
         results = await asyncio.gather(*tasks.values(), return_exceptions=True)
-        
+
         for (exchange, _), result in zip(tasks.items(), results):
             if isinstance(result, (int, float)) and result > 0:
                 prices[exchange] = result
-        
+
         return prices
 
     async def find_arbitrage_opportunities(
@@ -238,32 +290,30 @@ class ExchangePriceMonitor:
         threshold_percent: float = 0.5
     ) -> List[Dict]:
         """
-        Find arbitrage opportunities across exchanges
-        
+        Find arbitrage opportunities across exchanges.
+
         Args:
             threshold_percent: Minimum price difference % to report
-            
+
         Returns:
             List of opportunities
         """
         opportunities = []
-        
+
         for symbol in self.symbols:
             prices = await self.get_all_prices(symbol)
-            
+
             if len(prices) < 2:
                 continue
-            
-            # Find min and max prices
+
             min_exchange = min(prices, key=prices.get)
             max_exchange = max(prices, key=prices.get)
-            
+
             min_price = prices[min_exchange]
             max_price = prices[max_exchange]
-            
-            # Calculate difference
+
             diff_percent = ((max_price - min_price) / min_price) * 100
-            
+
             if diff_percent >= threshold_percent:
                 opportunity = {
                     'symbol': symbol,
@@ -273,66 +323,37 @@ class ExchangePriceMonitor:
                     'sell_price': max_price,
                     'difference_percent': diff_percent,
                     'potential_profit_per_unit': max_price - min_price,
+                    'all_prices': prices,
                     'timestamp': datetime.now().isoformat()
                 }
                 opportunities.append(opportunity)
-                
+
                 logger.info(
-                    f"📊 ARBITRAGE OPPORTUNITY: {symbol} | "
+                    f"ARBITRAGE OPPORTUNITY: {symbol} | "
                     f"Buy {min_exchange} @ ${min_price:.2f} | "
                     f"Sell {max_exchange} @ ${max_price:.2f} | "
                     f"Profit: {diff_percent:.2f}%"
                 )
-        
-        return opportunities
 
-    async def monitor_loop(
-        self,
-        interval: int = 10,
-        threshold: float = 0.5
-    ):
-        """
-        Continuous monitoring loop
-        
-        Args:
-            interval: Check every N seconds
-            threshold: Alert threshold %
-        """
-        logger.info(f"Starting monitoring loop (interval: {interval}s)")
-        
-        while True:
-            try:
-                # Find opportunities
-                opportunities = await self.find_arbitrage_opportunities(threshold)
-                
-                if opportunities:
-                    logger.info(f"Found {len(opportunities)} arbitrage opportunities")
-                
-                await asyncio.sleep(interval)
-                
-            except Exception as e:
-                logger.error(f"Monitoring error: {e}")
-                await asyncio.sleep(interval)
+        return opportunities
 
 
 # Example usage
 async def main():
     """Test the price monitor"""
     monitor = ExchangePriceMonitor(symbols=['BTC', 'ETH', 'SOL'])
-    
+
     await monitor.start()
-    
+
     try:
-        # Get current prices
         btc_prices = await monitor.get_all_prices('BTC')
         print(f"\nBTC Prices across exchanges:")
         for exchange, price in btc_prices.items():
             print(f"  {exchange}: ${price:,.2f}")
-        
-        # Find opportunities
+
         print("\nSearching for arbitrage opportunities...")
         opportunities = await monitor.find_arbitrage_opportunities(threshold=0.1)
-        
+
         if opportunities:
             print(f"\nFound {len(opportunities)} opportunities:")
             for opp in opportunities:
@@ -341,7 +362,7 @@ async def main():
                       f"({opp['difference_percent']:.2f}%)")
         else:
             print("No significant opportunities found")
-        
+
     finally:
         await monitor.stop()
 

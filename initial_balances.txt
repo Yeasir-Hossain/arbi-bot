@@ -1,3 +1,4 @@
+Binance Testnet Balances (2026-02-20)
 USDT: $14595.29
 BTC:  0.959820
 ETH:  0.250200

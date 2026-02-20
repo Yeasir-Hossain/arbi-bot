@@ -5,7 +5,8 @@ Usage: python scripts/view_profit.py
 """
 
 import sys
-sys.path.insert(0, '/home/yeasir/projects/ai-exp')
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from sqlalchemy import create_engine, text
 from config.config import config

@@ -10,7 +10,7 @@
 *.pem
 .secrets.*
 config/.secrets.*
-config/contracts.json
+
 
 # ============================================
 # Python
@@ -35,7 +35,7 @@ htmlcov/
 # Logs & Data
 # ============================================
 logs/*.log
-logs/alerts/*.log
+logs/alerts/
 logs/executions/*.log
 data/*.json
 data/*.jsonl

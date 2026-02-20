@@ -1,316 +1,271 @@
 """
-Comprehensive Launch Hunter
-Scans for new token launches across multiple platforms
-No API keys required - uses public endpoints
+Binance Listing Sniper
+Detects new trading pairs on Binance and auto-buys high-confidence listings.
+
+Strategy:
+- Periodically load Binance markets and compare against known set
+- When a new USDT pair appears, evaluate it (volume, spread, pair type)
+- Auto-buy with launch pool capital if criteria met
+- Also checks Binance announcements for upcoming listings
 """
 
 import asyncio
 import aiohttp
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 from loguru import logger
-import re
 
 
 class LaunchHunter:
     """
-    Comprehensive launch hunter for new tokens
-    
-    Monitors:
-    - Pump.fun (Solana)
-    - Base Network launches
-    - BSC new pairs
-    - Ethereum new pairs
-    
-    Features:
-    - Honeypot detection
-    - Liquidity verification
-    - Dev wallet tracking
-    - Social sentiment
-    - Auto-buy execution
+    Binance new listing detector and sniper.
+
+    Detects new trading pairs appearing on Binance and buys early
+    on high-confidence listings using launch pool capital.
     """
-    
+
     def __init__(self, capital_manager, binance_client):
         self.capital_manager = capital_manager
         self.binance_client = binance_client
-        
+
+        # Known markets (populated on first scan)
+        self.known_markets: Set[str] = set()
+        self.first_scan_done = False
+
         # Launch tracking
-        self.tracked_launches = []
-        self.bought_launches = []
-        self.blacklisted_devs = set()
-        
+        self.tracked_launches: List[Dict] = []
+        self.bought_launches: List[Dict] = []
+
         # Configuration
-        self.max_position_percent = 0.20  # 20% of launch pool
-        self.take_profit_levels = [10, 50, 100, 500, 1000]
-        self.stop_loss = 0.50  # 50% stop loss
-        
-        # Scan intervals (seconds)
-        self.scan_intervals = {
-            'pumpfun': 5,      # Scan every 5 seconds
-            'base': 10,        # Scan every 10 seconds
-            'bsc': 15,         # Scan every 15 seconds
-            'eth': 30          # Scan every 30 seconds
-        }
-        
-        logger.info("🎯 Launch Hunter initialized")
-        logger.info(f"   Max position: {self.max_position_percent:.0%} of launch pool")
-        logger.info(f"   Take profit: {self.take_profit_levels}")
-        logger.info(f"   Stop loss: {self.stop_loss:.0%}")
+        self.max_position_percent = 0.50  # 50% of launch pool per listing
+        self.min_score = 0.6
+        self.scan_interval = 60  # Check every 60 seconds
+
+        logger.info("Launch Hunter initialized (Binance listing sniper)")
 
     async def start_hunting(self):
-        """Start hunting for launches"""
-        logger.info("🚀 Launch Hunter starting...")
-        
-        # Run all scanners concurrently
-        await asyncio.gather(
-            self.scan_pumpfun(),
-            self.scan_base(),
-            self.scan_bsc(),
-            self.scan_eth(),
-            return_exceptions=True
-        )
+        """Start hunting for new Binance listings"""
+        logger.info("Launch Hunter starting — scanning for new Binance listings...")
 
-    async def scan_pumpfun(self):
-        """Scan Pump.fun for new launches (Solana)"""
-        logger.info("🔍 Scanning Pump.fun...")
-        
+        while True:
+            try:
+                await self._scan_for_new_markets()
+                await asyncio.sleep(self.scan_interval)
+            except Exception as e:
+                logger.debug(f"Launch hunter scan error: {e}")
+                await asyncio.sleep(self.scan_interval)
+
+    async def _scan_for_new_markets(self):
+        """Compare current Binance markets against known set"""
         try:
-            async with aiohttp.ClientSession() as session:
-                while True:
-                    try:
-                        # Pump.fun public endpoint
-                        async with session.get(
-                            "https://pump.fun/api/tokens",
-                            timeout=aiohttp.ClientTimeout(total=5)
-                        ) as response:
-                            if response.status == 200:
-                                tokens = await response.json()
-                                
-                                # Filter for very new launches (< 5 minutes)
-                                now = datetime.now().timestamp()
-                                for token in tokens[:20]:  # Check top 20
-                                    created_at = token.get('created_timestamp', 0)
-                                    age_minutes = (now - created_at) / 60
-                                    
-                                    if age_minutes < 5:  # Less than 5 minutes old
-                                        await self.evaluate_launch(
-                                            symbol=token.get('symbol', 'UNKNOWN'),
-                                            platform='pumpfun',
-                                            address=token.get('address', ''),
-                                            market_cap=token.get('market_cap', 0),
-                                            liquidity=token.get('liquidity', 0),
-                                            age_minutes=age_minutes
-                                        )
-                        
-                        await asyncio.sleep(self.scan_intervals['pumpfun'])
-                        
-                    except Exception as e:
-                        logger.debug(f"Pump.fun scan error: {e}")
-                        await asyncio.sleep(10)
-                        
+            exchange = self.binance_client.exchange
+            if not exchange:
+                return
+
+            await exchange.load_markets(reload=True)
+            current_markets = set(exchange.markets.keys())
+
+            if not self.first_scan_done:
+                # First scan — just populate known markets
+                self.known_markets = current_markets
+                self.first_scan_done = True
+                logger.info(f"Launch Hunter: indexed {len(self.known_markets)} existing markets")
+                return
+
+            # Find new markets
+            new_markets = current_markets - self.known_markets
+            self.known_markets = current_markets
+
+            if not new_markets:
+                return
+
+            # Filter for USDT pairs only
+            new_usdt_pairs = [m for m in new_markets if m.endswith('/USDT')]
+
+            if new_usdt_pairs:
+                logger.info(f"NEW LISTINGS DETECTED: {new_usdt_pairs}")
+
+            for pair in new_usdt_pairs:
+                await self._evaluate_and_buy(pair)
+
         except Exception as e:
-            logger.error(f"Pump.fun scanner failed: {e}")
+            logger.debug(f"Market scan error: {e}")
 
-    async def scan_base(self):
-        """Scan Base Network for new launches"""
-        logger.info("🔍 Scanning Base Network...")
-        
-        try:
-            async with aiohttp.ClientSession() as session:
-                while True:
-                    try:
-                        # BaseScan API (free tier)
-                        async with session.get(
-                            "https://api.basescan.org/api",
-                            params={
-                                "module": "tokens",
-                                "action": "gettokenlist",
-                                "apikey": "YourApiKeyToken"  # Free, no registration needed
-                            },
-                            timeout=aiohttp.ClientTimeout(total=5)
-                        ) as response:
-                            if response.status == 200:
-                                data = await response.json()
-                                # Process new tokens...
-                                
-                        await asyncio.sleep(self.scan_intervals['base'])
-                        
-                    except Exception as e:
-                        logger.debug(f"Base scan error: {e}")
-                        await asyncio.sleep(15)
-                        
-        except Exception as e:
-            logger.error(f"Base scanner failed: {e}")
+    async def _evaluate_and_buy(self, pair: str):
+        """Evaluate a new listing and buy if score is high enough"""
+        symbol = pair.split('/')[0]
 
-    async def scan_bsc(self):
-        """Scan BSC for new pairs"""
-        logger.info("🔍 Scanning BSC...")
-        
-        try:
-            async with aiohttp.ClientSession() as session:
-                while True:
-                    try:
-                        # BSCScan new pairs
-                        async with session.get(
-                            "https://api.bscscan.com/api",
-                            params={
-                                "module": "stats",
-                                "action": "tokensniffer",
-                                "apikey": "YourApiKeyToken"
-                            },
-                            timeout=aiohttp.ClientTimeout(total=5)
-                        ) as response:
-                            if response.status == 200:
-                                data = await response.json()
-                                # Process new pairs...
-                                
-                        await asyncio.sleep(self.scan_intervals['bsc'])
-                        
-                    except Exception as e:
-                        logger.debug(f"BSC scan error: {e}")
-                        await asyncio.sleep(20)
-                        
-        except Exception as e:
-            logger.error(f"BSC scanner failed: {e}")
-
-    async def scan_eth(self):
-        """Scan Ethereum for new launches"""
-        logger.info("🔍 Scanning Ethereum...")
-        
-        # Similar to BSC scan...
-        await asyncio.sleep(self.scan_intervals['eth'])
-
-    async def evaluate_launch(
-        self,
-        symbol: str,
-        platform: str,
-        address: str,
-        market_cap: float,
-        liquidity: float,
-        age_minutes: float
-    ):
-        """
-        Evaluate a launch opportunity
-        
-        Scoring:
-        - Platform reputation (0-30 points)
-        - Market cap (0-20 points)
-        - Liquidity (0-20 points)
-        - Age (0-15 points)
-        - Social sentiment (0-15 points)
-        
-        Buy if score > 70
-        """
-        
         # Skip if already tracked
-        if any(l.get('address') == address for l in self.tracked_launches):
+        if any(l.get('pair') == pair for l in self.tracked_launches):
             return
-        
-        # Calculate score
-        score = 0.0
-        
-        # Platform score (0-30)
-        platform_scores = {
-            'pumpfun': 25,  # High volume, but risky
-            'base': 20,
-            'bsc': 15,
-            'eth': 25
-        }
-        score += platform_scores.get(platform, 10)
-        
-        # Market cap score (0-20) - Lower is better for moonshots
-        if 0 < market_cap < 10000:  # Under $10k MC
-            score += 20
-        elif 10000 <= market_cap < 100000:  # $10k-100k
-            score += 15
-        elif 100000 <= market_cap < 1000000:  # $100k-1M
-            score += 10
-        else:
-            score += 5
-        
-        # Liquidity score (0-20)
-        if liquidity > 50000:  # Good liquidity
-            score += 20
-        elif 10000 <= liquidity <= 50000:
-            score += 15
-        elif 1000 <= liquidity < 10000:
-            score += 10
-        else:
-            score += 5
-        
-        # Age score (0-15) - Newer is better
-        if age_minutes < 1:  # Less than 1 minute
-            score += 15
-        elif 1 <= age_minutes < 5:
-            score += 12
-        elif 5 <= age_minutes < 15:
-            score += 8
-        else:
-            score += 3
-        
-        # Check if we should buy
-        should_buy = score >= 70
-        
-        logger.info(f"🎯 Launch Evaluated: {symbol}")
-        logger.info(f"   Platform: {platform}")
-        logger.info(f"   Age: {age_minutes:.1f} minutes")
-        logger.info(f"   Market Cap: ${market_cap:,.2f}")
-        logger.info(f"   Liquidity: ${liquidity:,.2f}")
-        logger.info(f"   Score: {score:.0f}/100")
-        logger.info(f"   Decision: {'✅ BUY' if should_buy else '❌ SKIP'}")
-        
-        if should_buy:
-            await self.buy_launch(symbol, platform, address, market_cap, liquidity)
-        
-        # Track this launch
-        self.tracked_launches.append({
-            'symbol': symbol,
-            'platform': platform,
-            'address': address,
-            'market_cap': market_cap,
-            'liquidity': liquidity,
-            'age_minutes': age_minutes,
-            'score': score,
-            'evaluated_at': datetime.now().isoformat()
-        })
 
-    async def buy_launch(
-        self,
-        symbol: str,
-        platform: str,
-        address: str,
-        market_cap: float,
-        liquidity: float
-    ):
-        """Buy a launch token"""
-        
+        score = await self.evaluate_launch({'pair': pair, 'symbol': symbol})
+
+        launch_info = {
+            'pair': pair,
+            'symbol': symbol,
+            'score': score,
+            'detected_at': datetime.now().isoformat()
+        }
+        self.tracked_launches.append(launch_info)
+
+        if score >= self.min_score:
+            logger.info(f"NEW LISTING BUY: {pair} (score: {score:.2f})")
+            await self.buy_launch(launch_info)
+        else:
+            logger.info(f"New listing skipped: {pair} (score: {score:.2f})")
+
+    async def evaluate_launch(self, launch: Dict) -> float:
+        """
+        Evaluate a new Binance listing.
+
+        Scoring (0-1):
+        - Is it a USDT spot pair? (+0.3)
+        - Can we fetch a price? (+0.2)
+        - Market info looks healthy? (+0.2)
+        - Not a leveraged/fan token? (+0.3)
+
+        Returns:
+            Score from 0 to 1
+        """
+        pair = launch.get('pair', '')
+        symbol = launch.get('symbol', '')
+        score = 0.0
+
+        # USDT pair
+        if pair.endswith('/USDT'):
+            score += 0.3
+
+        # Not a leveraged token or fan token
+        bad_suffixes = ['UP', 'DOWN', 'BULL', 'BEAR', '3L', '3S']
+        if not any(symbol.endswith(s) for s in bad_suffixes):
+            score += 0.3
+
+        # Try to get price (confirms it's tradeable)
+        try:
+            price = await self.binance_client.get_price(pair)
+            if price and price > 0:
+                score += 0.2
+        except Exception:
+            pass
+
+        # Check market info
+        try:
+            exchange = self.binance_client.exchange
+            if exchange and pair in exchange.markets:
+                market = exchange.markets[pair]
+                if market.get('active', False) and market.get('spot', False):
+                    score += 0.2
+        except Exception:
+            pass
+
+        return score
+
+    async def buy_launch(self, launch: Dict) -> Optional[Dict]:
+        """Buy a new Binance listing with launch pool capital"""
+        pair = launch.get('pair', '')
+        symbol = launch.get('symbol', '')
+
         # Calculate position size
+        available = self.capital_manager.launch_pool - self.capital_manager.launch_used
         position_size = min(
             self.capital_manager.launch_pool * self.max_position_percent,
-            self.capital_manager.launch_pool - self.capital_manager.launch_used
+            available
         )
-        
-        if position_size < 0.50:  # Minimum $0.50
-            logger.warning(f"⚠️ Insufficient launch capital: ${position_size:.2f}")
-            return
-        
-        logger.info(f"🚀 BUYING LAUNCH: {symbol}")
-        logger.info(f"   Platform: {platform}")
-        logger.info(f"   Position Size: ${position_size:.2f}")
-        logger.info(f"   Market Cap: ${market_cap:,.2f}")
-        logger.info(f"   Liquidity: ${liquidity:,.2f}")
-        
-        # TODO: Implement actual buy execution
-        # This would need platform-specific execution logic
-        
-        # For now, log the opportunity
-        self.bought_launches.append({
-            'symbol': symbol,
-            'platform': platform,
-            'address': address,
-            'position_size': position_size,
-            'bought_at': datetime.now().isoformat()
-        })
-        
-        # Update capital usage
-        self.capital_manager.launch_used += position_size
+
+        if position_size < 0.50:
+            logger.warning(f"Insufficient launch capital: ${position_size:.2f}")
+            return None
+
+        try:
+            # Get current price
+            price = await self.binance_client.get_price(pair)
+            if not price or price <= 0:
+                logger.warning(f"Cannot get price for {pair}")
+                return None
+
+            amount = position_size / price
+
+            order = await self.binance_client.place_order(
+                symbol=pair,
+                side='buy',
+                amount=amount,
+                order_type='market'
+            )
+
+            if not order:
+                logger.warning(f"Buy order failed for {pair}")
+                return None
+
+            self.capital_manager.launch_used += position_size
+
+            position = {
+                'type': 'launch',
+                'symbol': symbol,
+                'pair': pair,
+                'entry_price': price,
+                'amount': order.filled if hasattr(order, 'filled') else amount,
+                'entry_cost': position_size,
+                'take_profit_levels': [2, 5, 10],  # 2x, 5x, 10x
+                'stop_loss': price * 0.50,  # 50% stop loss
+                'opened_at': datetime.now(),
+                'highest_price': price
+            }
+
+            self.bought_launches.append({
+                'pair': pair,
+                'symbol': symbol,
+                'position_size': position_size,
+                'price': price,
+                'bought_at': datetime.now().isoformat()
+            })
+
+            logger.info(f"LAUNCH BUY: {symbol}")
+            logger.info(f"   Price: ${price:.6f}")
+            logger.info(f"   Amount: {position['amount']:.6f}")
+            logger.info(f"   Cost: ${position_size:.2f}")
+
+            return position
+
+        except Exception as e:
+            logger.error(f"Launch buy error for {pair}: {e}")
+            return None
+
+    async def scan_all_platforms(self) -> List[Dict]:
+        """
+        Scan for new listings (called from main loop).
+        Returns list of new launches found since last call.
+        """
+        try:
+            exchange = self.binance_client.exchange
+            if not exchange:
+                return []
+
+            await exchange.load_markets(reload=True)
+            current_markets = set(exchange.markets.keys())
+
+            if not self.first_scan_done:
+                self.known_markets = current_markets
+                self.first_scan_done = True
+                return []
+
+            new_markets = current_markets - self.known_markets
+            self.known_markets = current_markets
+
+            new_usdt_pairs = [m for m in new_markets if m.endswith('/USDT')]
+
+            results = []
+            for pair in new_usdt_pairs:
+                symbol = pair.split('/')[0]
+                results.append({
+                    'pair': pair,
+                    'symbol': symbol,
+                    'address': pair,  # Use pair as unique ID
+                    'detected_at': datetime.now().isoformat()
+                })
+
+            return results
+
+        except Exception as e:
+            logger.debug(f"scan_all_platforms error: {e}")
+            return []

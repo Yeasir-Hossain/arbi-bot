@@ -5,7 +5,8 @@ Check database state, view trades, positions, and profit
 """
 
 import sys
-sys.path.insert(0, '/home/yeasir/projects/ai-exp')
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from trading.state_manager import get_state_manager
 from config.config import config

@@ -52,19 +52,17 @@ class CapitalManager:
 
     def get_arb_position_size(self) -> float:
         """
-        Get position size for arbitrage trade
+        Get position size for arbitrage trade.
 
-        Returns:
-            Position size in USDT (minimum $10 for Binance)
+        With a small pool ($13.50), use all available capital per trade.
+        Returns 0 if available < $10 (Binance minimum order value).
         """
         available = self.arbitrage_pool - self.arb_used
 
-        # Use 50% of available per trade
-        position = available * 0.50
+        if available < 10.0:
+            return 0.0  # Can't meet Binance minimum
 
-        # Minimum $10 (Binance minimum order value)
-        # Maximum available
-        return max(10.0, min(position, available))
+        return available
 
     def get_launch_position_size(self) -> float:
         """

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-HYBRID TRADING BOT - Main Entry Point
-90% Arbitrage + 10% Token Launches
+ARBITRAGE TRADING BOT - Main Entry Point
+90% Arbitrage + 10% New Listings
 Starting Capital: $15
 
 Run with:
-    python main.py --mode testnet --strategy hybrid
-    python main.py --mode live --strategy hybrid --capital 15
+    python main.py --mode testnet --capital 15
+    python main.py --mode live --capital 15
 """
 
 import asyncio
@@ -29,6 +29,7 @@ from trading.launch_hunter import LaunchHunter
 from trading.smart_pair_selector import SmartPairSelector, get_pair_selector
 from trading.state_manager import StateManager, get_state_manager
 from monitoring import PerformanceTracker, Dashboard
+from monitoring.web_dashboard import start_web_dashboard
 import json
 
 # Dashboard stats (in-memory, instant access - no DB delay)
@@ -289,10 +290,11 @@ class HybridTradingBot:
             self.logger.warning(f"Failed to save initial balance: {e}")
         
         try:
-            # Run main trading loop and dashboard in parallel
+            # Run main trading loop, CLI dashboard, and web dashboard in parallel
             await asyncio.gather(
                 self.trading_loop(),
-                self.dashboard.run()
+                self.dashboard.run(),
+                start_web_dashboard(bot=self, port=8080)
             )
         except KeyboardInterrupt:
             self.logger.info("\nShutdown requested...")
