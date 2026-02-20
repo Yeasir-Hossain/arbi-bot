@@ -142,6 +142,8 @@ class TradingConfig(BaseSettings):
     # Arbitrage settings
     shadow_arbitrage_enabled: bool = Field(default=True, alias="SHADOW_ARBITRAGE_ENABLED")
     arbitrage_min_confidence: float = Field(default=0.75, alias="ARBITRAGE_MIN_CONFIDENCE")
+    min_arb_profit_percent: float = Field(default=0.03, alias="MIN_ARB_PROFIT_PERCENT")  # 3%
+    multi_exchange_trading: bool = Field(default=False, alias="MULTI_EXCHANGE_TRADING")
 
 
 class DatabaseConfig(BaseSettings):

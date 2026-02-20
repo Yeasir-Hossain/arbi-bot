@@ -182,11 +182,11 @@ class HybridTradingBot:
                 capital_manager=self.capital_manager,
                 binance_client=self.binance_client,
                 price_monitor=self.price_monitor,
-                min_profit_threshold=0.0001,  # 0.01% - VERY LOW for testing
-                max_position_percent=0.20,
-                stop_loss_percent=0.02
+                min_profit_threshold=config.trading.min_arb_profit_percent,  # From .env
+                max_position_percent=config.trading.max_position_size,
+                stop_loss_percent=config.trading.stop_loss_percent
             )
-            self.logger.info(f"✓ Arbitrage engine ready (threshold: 0.01%)")
+            self.logger.info(f"✓ Arbitrage engine ready (threshold: {config.trading.min_arb_profit_percent:.1%})")
             
             # Initialize launch monitor
             self.logger.info("Initializing Launch Monitor...")
